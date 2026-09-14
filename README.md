@@ -209,7 +209,7 @@ The boundary is narrower than it sounds: latents obtained that way are just a
 surface here takes that file as it came down — no unzipping, no copying:
 
 ```python
-tts.add_voices("~/Downloads/my-voice.zip")   # once, ever
+tts.add_voices("my-voice.zip")   # once, ever
 tts.synthesize("Xin chào.", voice="my-voice")
 ```
 

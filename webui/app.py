@@ -47,6 +47,7 @@ if os.path.isfile(os.path.join(_SRC, "zerotts", "__init__.py")):
 
 import audio_stream  # noqa: E402
 import engine  # noqa: E402
+
 BANNER_PATH = os.path.join(_ROOT, "docs", "assets", "banner.png")
 
 DEFAULT_TEXT = "Xin chào tất cả mọi người. Giọng nói này được tạo ra bởi ZeroTTS."
