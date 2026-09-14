@@ -200,8 +200,9 @@ teacher-forced frames. It ships as a `.npz` inside the weights repo.
 > **the voice encoder is not published**. This package can load voices; it cannot
 > create them from audio. There is no flag that turns this on.
 >
-> To get latents for your own speaker, visit
-> **[zeroweight.ai](https://zeroweight.ai)** or get in touch.
+> To clone your own voice, head to
+> **[platform.zeroweight.ai/audio](https://platform.zeroweight.ai/audio)**,
+> upload a reference clip, and download the resulting latents.
 
 The boundary is narrower than it sounds: latents obtained that way are just a
 `.npz`, so they drop into `voices/<name>/voice.npz` and work with no code change.
