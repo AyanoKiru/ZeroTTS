@@ -21,6 +21,8 @@ import {
 } from './repo';
 import { loadSampleTexts } from './samples';
 import { StreamPlayer, toWavBlob } from './player';
+import { LocalVoice, readVoiceZip } from './voicePack';
+import { deleteVoice, loadVoices, saveVoice } from './voiceStore';
 import { TtsWorker } from './workerClient';
 import { VoiceIndex } from './types';
 
@@ -53,6 +55,14 @@ const els = {
   sizeNote: $<HTMLParagraphElement>('size-note'),
   preview: $<HTMLAudioElement>('preview'),
   voiceMeta: $<HTMLParagraphElement>('voice-meta'),
+  tabPick: $<HTMLButtonElement>('tab-pick'),
+  tabImport: $<HTMLButtonElement>('tab-import'),
+  panelPick: $<HTMLDivElement>('panel-pick'),
+  panelImport: $<HTMLDivElement>('panel-import'),
+  voiceDrop: $<HTMLLabelElement>('voice-drop'),
+  voiceZip: $<HTMLInputElement>('voice-zip'),
+  voiceLoadStatus: $<HTMLParagraphElement>('voice-load-status'),
+  voiceList: $<HTMLDivElement>('voice-list'),
   segments: $<HTMLPreElement>('segments'),
   result: $<HTMLAudioElement>('result'),
   livePill: $<HTMLDivElement>('live-pill'),
@@ -67,6 +77,16 @@ let samples: Record<string, string> = {};
 const tts = new TtsWorker();
 let sampleRate = 0;
 let voices: VoiceIndex = { voices: [] };
+/** Installed voices, by the `local:` value they get in the picker. Kept on this
+ *  thread: the page previews and labels them, and the latents ride along on
+ *  each generate message. Restored from IndexedDB at startup. */
+const localVoices = new Map<string, LocalVoice>();
+/** Preview object URLs this page made for them, and therefore has to revoke. */
+const localPreviewUrls = new Map<string, string>();
+/** The latents shape these weights want, once the model has said. Null before
+ *  the first load — a pack can be picked before then, and is checked when the
+ *  model arrives instead of being refused for a reason nobody can act on. */
+let voiceShape: { nVoiceQueries: number; dModel: number } | null = null;
 let base = '';
 let player: StreamPlayer | null = null;
 let cancelRun: (() => void) | null = null;
@@ -157,6 +177,11 @@ els.load.addEventListener('click', async () => {
     voices = loaded.voices;
     base = loaded.base;
     sampleRate = loaded.sampleRate;
+    voiceShape = { nVoiceQueries: loaded.nVoiceQueries, dModel: loaded.dModel };
+    // A pack picked before the model was loaded went in unchecked; now there is
+    // something to check it against.
+    const mismatch = dropMismatchedLocalVoices();
+    if (mismatch) voiceLoadStatus(mismatch);
 
     renderVoiceOptions();
     // Prefer "maichi" (Mai Chi) as the default, same as the README/webui — its
@@ -196,7 +221,9 @@ els.generate.addEventListener('click', async () => {
   const seedValue = Number(els.seed.value);
   const seed = Number.isFinite(seedValue) && seedValue >= 0 ? seedValue : undefined;
 
-  const voiceName = els.voice.value;
+  const selected = els.voice.value;
+  const local = localVoices.get(selected);
+  const voiceName = local ? '' : selected;
   const chunks: Float32Array[] = [];
   const started = performance.now();
   let firstChunkAt: number | null = null;
@@ -218,7 +245,7 @@ els.generate.addEventListener('click', async () => {
     // The worker loads the voice and runs the model; this thread stays free to
     // paint, so the buttons and the log update while generation is under way.
     const run = tts.generate({
-      segments, voiceName,
+      segments, voiceName, voiceEmb: local?.emb,
       options: {
         cfgScale: Number(els.cfg.value), audioTemperature: Number(els.temperature.value),
       },
@@ -262,7 +289,7 @@ els.generate.addEventListener('click', async () => {
     els.download.download = 'zerotts.wav';
     els.download.style.display = 'inline-block';
     showTake(url, false);
-    addTake({ url, text, title: takeTitle(voiceName, duration) });
+    addTake({ url, text, title: takeTitle(selected, duration) });
   } catch (error) {
     if (!stopped) status(`Generation failed: ${(error as Error).message}`);
   } finally {
@@ -291,14 +318,37 @@ els.clear.addEventListener('click', async () => {
  *  shipped packs the labels already carry the tags, and a filter above the
  *  picker is one more thing to understand before hearing anything. */
 function renderVoiceOptions(): void {
+  const keep = els.voice.value;
   els.voice.innerHTML = '<option value="">(không dùng giọng nào)</option>';
-  for (const v of voices.voices) {
-    const option = document.createElement('option');
-    option.value = v.name;
-    const label = v.display_name || v.name;
-    option.textContent = (v.tags && v.tags.length) ? `${label} — ${v.tags.join(', ')}` : label;
-    els.voice.append(option);
+
+  const option = (value: string, label: string, tags: string[]) => {
+    const el = document.createElement('option');
+    el.value = value;
+    el.textContent = tags.length ? `${label} — ${tags.join(', ')}` : label;
+    return el;
+  };
+
+  // The user's own voices lead, in their own group: someone who has just
+  // loaded a folder is looking for what they loaded, not for the presets.
+  if (localVoices.size) {
+    const group = document.createElement('optgroup');
+    group.label = 'Giọng của bạn';
+    for (const [value, v] of localVoices) {
+      group.append(option(value, v.displayName, v.tags));
+    }
+    els.voice.append(group);
   }
+
+  const shipped = document.createElement('optgroup');
+  shipped.label = 'Giọng có sẵn';
+  for (const v of voices.voices) {
+    shipped.append(option(v.name, v.display_name || v.name, v.tags ?? []));
+  }
+  if (voices.voices.length) els.voice.append(shipped);
+
+  // A re-render happens when a voice is added or dropped, not when one is
+  // chosen — losing the selection to it would be a silent switch of speaker.
+  if (keep && [...els.voice.options].some((o) => o.value === keep)) els.voice.value = keep;
 }
 
 /** Preview clips already fetched, as object URLs. */
@@ -309,6 +359,20 @@ let previewToken = 0;
 async function updateVoiceUi(): Promise<void> {
   const name = els.voice.value;
   const token = ++previewToken;
+
+  // An installed voice carries its own preview and metadata — neither needs the
+  // weights repo, so this runs before the model is loaded as well as after.
+  const local = localVoices.get(name);
+  if (local) {
+    els.voiceMeta.textContent = [local.displayName, local.language, ...local.tags]
+      .filter(Boolean).join(' · ');
+    const url = localPreviewUrl(name);
+    els.preview.style.display = url ? 'block' : 'none';
+    if (url) els.preview.src = url;
+    else els.preview.removeAttribute('src');
+    return;
+  }
+
   if (!name || !base) {
     els.preview.removeAttribute('src');
     els.preview.style.display = 'none';
@@ -343,6 +407,212 @@ async function updateVoiceUi(): Promise<void> {
   }
 }
 
+// ── the user's own voices ───────────────────────────────────────────────────
+
+/**
+ * The voice card's two tabs.
+ *
+ * Picking is the default and the common act; importing is the once-per-voice
+ * one, so it sits behind a tab rather than taking a card of its own next to the
+ * picker it feeds.
+ */
+function showVoiceTab(tab: 'pick' | 'import'): void {
+  const importing = tab === 'import';
+  els.panelPick.hidden = importing;
+  els.panelImport.hidden = !importing;
+  els.tabPick.classList.toggle('on', !importing);
+  els.tabImport.classList.toggle('on', importing);
+  els.tabPick.setAttribute('aria-selected', String(!importing));
+  els.tabImport.setAttribute('aria-selected', String(importing));
+}
+
+els.tabPick.addEventListener('click', () => showVoiceTab('pick'));
+els.tabImport.addEventListener('click', () => showVoiceTab('import'));
+
+/** The picker value an installed voice gets. Namespaced so a voice called
+ *  `maichi` cannot be confused with the shipped pack of that name. */
+const localValue = (name: string) => `local:${name}`;
+
+function voiceLoadStatus(text: string): void {
+  els.voiceLoadStatus.textContent = text;
+}
+
+/** The preview clip's URL, made on demand and cached — a voice restored from
+ *  storage has a Blob, not a URL, and most of them are never played. */
+function localPreviewUrl(value: string): string | null {
+  const voice = localVoices.get(value);
+  if (!voice?.preview) return null;
+  let url = localPreviewUrls.get(value);
+  if (!url) localPreviewUrls.set(value, (url = URL.createObjectURL(voice.preview)));
+  return url;
+}
+
+function forgetLocalVoice(value: string): void {
+  localVoices.delete(value);
+  const url = localPreviewUrls.get(value);
+  if (url) { URL.revokeObjectURL(url); localPreviewUrls.delete(value); }
+}
+
+/**
+ * Drop any installed voice whose latents do not fit these weights.
+ *
+ * Shape is the only check worth making and the only one that can be made: the
+ * wrong latents have the right dtype and rank, so they feed the model cleanly
+ * and come out as a confident voice that is nobody's. Runs once the model has
+ * reported its shape, which may be after the voice was installed. Returns the
+ * sentence to show, or '' when nothing was dropped.
+ */
+function dropMismatchedLocalVoices(): string {
+  if (!voiceShape) return '';
+  const expected = voiceShape.nVoiceQueries * voiceShape.dModel;
+  const dropped: string[] = [];
+  for (const [value, voice] of localVoices) {
+    if (voice.emb.length === expected) continue;
+    forgetLocalVoice(value);
+    void deleteVoice(voice.name);  // and do not offer it again next visit
+    dropped.push(voice.displayName);
+  }
+  if (!dropped.length) return '';
+  return `Đã bỏ ${dropped.join(', ')}: latents không khớp mô hình này `
+    + `(cần ${expected} số thực) — giọng này thuộc về một bộ trọng số khác.`;
+}
+
+/** The installed voices, each with a way to remove it. Without this a voice
+ *  that turns out to be wrong is stuck in the browser for good. */
+function renderVoiceList(): void {
+  if (!localVoices.size) {
+    els.voiceList.innerHTML = '';
+    return;
+  }
+  els.voiceList.replaceChildren(...[...localVoices].map(([value, voice]) => {
+    const row = document.createElement('div');
+    row.className = 'voice-row';
+
+    const label = document.createElement('button');
+    label.type = 'button';
+    label.className = 'voice-row-name';
+    label.textContent = voice.tags.length
+      ? `${voice.displayName} — ${voice.tags.join(', ')}` : voice.displayName;
+    label.addEventListener('click', () => {
+      els.voice.value = value;
+      els.voice.disabled = false;
+      void updateVoiceUi();
+      showVoiceTab('pick');
+    });
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'voice-row-x';
+    remove.title = `Xoá ${voice.displayName}`;
+    remove.setAttribute('aria-label', `Xoá ${voice.displayName}`);
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      const wasSelected = els.voice.value === value;
+      forgetLocalVoice(value);
+      void deleteVoice(voice.name);
+      renderVoiceOptions();
+      renderVoiceList();
+      if (wasSelected) void updateVoiceUi();
+      voiceLoadStatus(`Đã xoá ${voice.displayName}.`);
+    });
+
+    row.append(label, remove);
+    return row;
+  }));
+}
+
+/** Install a dropped zip: read it, check it, keep it. */
+async function installVoiceZip(file: File): Promise<void> {
+  voiceLoadStatus(`Đang đọc ${file.name}…`);
+  const { voices: loaded, errors } = await readVoiceZip(file);
+
+  for (const voice of loaded) {
+    // Re-dropping the same voice is an update, not a second copy.
+    forgetLocalVoice(localValue(voice.name));
+    localVoices.set(localValue(voice.name), voice);
+  }
+
+  const mismatch = dropMismatchedLocalVoices();
+  const kept = loaded.filter((v) => localVoices.has(localValue(v.name)));
+  // Persisted only once it has survived the shape check, so a voice for other
+  // weights is not waiting in the picker on the next visit.
+  await Promise.all(kept.map(saveVoice));
+
+  renderVoiceOptions();
+  renderVoiceList();
+  if (kept.length) {
+    // Select what was just installed: dropping a voice in has one obvious
+    // follow-up, and hunting for it in the dropdown is not it.
+    els.voice.value = localValue(kept[0].name);
+    els.voice.disabled = false;
+    await updateVoiceUi();
+    // The import is done and the voice is selected; leaving the user on the
+    // drop zone hides the thing they just made happen.
+    showVoiceTab('pick');
+  }
+
+  const lines: string[] = [];
+  if (kept.length) {
+    lines.push(`✅ Đã nạp ${kept.length} giọng: `
+      + kept.map((v) => v.displayName).join(', ')
+      + '. Giọng được lưu trong trình duyệt — lần sau mở lại là có sẵn.');
+    if (!voiceShape) lines.push('Hãy tải mô hình để nghe thử và tạo giọng nói.');
+  }
+  if (mismatch) lines.push(mismatch);
+  lines.push(...errors);
+  voiceLoadStatus(lines.join(' '));
+}
+
+/** One zip at a time, in the order they were dropped — installing two at once
+ *  would race on the picker selection and the status line. */
+async function installVoiceZips(files: File[]): Promise<void> {
+  for (const file of files) await installVoiceZip(file);
+}
+
+const isZip = (file: File) =>
+  file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip';
+
+function acceptDropped(files: File[]): void {
+  const zips = files.filter(isZip);
+  if (!zips.length) {
+    voiceLoadStatus('Hãy chọn file .zip đã tải về từ thư viện giọng.');
+    return;
+  }
+  void installVoiceZips(zips);
+}
+
+els.voiceZip.addEventListener('change', () => {
+  const files = [...(els.voiceZip.files ?? [])];
+  // Reset first, so picking the same file again still fires `change`.
+  els.voiceZip.value = '';
+  acceptDropped(files);
+});
+
+// The whole card is the drop target, not just the button inside it: a file
+// aimed at a 200px label and released 10px off would otherwise navigate the
+// tab to the zip.
+for (const type of ['dragenter', 'dragover'] as const) {
+  els.voiceDrop.addEventListener(type, (event) => {
+    event.preventDefault();
+    els.voiceDrop.classList.add('over');
+  });
+}
+for (const type of ['dragleave', 'dragend'] as const) {
+  els.voiceDrop.addEventListener(type, () => els.voiceDrop.classList.remove('over'));
+}
+els.voiceDrop.addEventListener('drop', (event) => {
+  event.preventDefault();
+  els.voiceDrop.classList.remove('over');
+  acceptDropped([...(event.dataTransfer?.files ?? [])]);
+});
+// A file dropped anywhere else on the page still opens in the tab by default,
+// which loses whatever was typed. Swallow it.
+for (const type of ['dragover', 'drop'] as const) {
+  window.addEventListener(type, (event) => {
+    if (!els.voiceDrop.contains(event.target as Node)) event.preventDefault();
+  });
+}
+
 // ── the two list panels ──────────────────────────────────────────────────────
 
 /** One clickable row: a bold title over a single-line preview. */
@@ -374,9 +644,10 @@ function renderTemplates(): void {
   );
 }
 
-function takeTitle(voiceName: string, seconds: number): string {
-  const voice = voices.voices.find((v) => v.name === voiceName);
-  const label = voice ? (voice.display_name || voice.name) : 'không giọng';
+function takeTitle(value: string, seconds: number): string {
+  const voice = voices.voices.find((v) => v.name === value);
+  const label = localVoices.get(value)?.displayName
+    ?? (voice ? (voice.display_name || voice.name) : 'không giọng');
   const now = new Date().toLocaleTimeString('vi-VN', { hour12: false });
   return `🔊  ${label}  ·  ${now}  ·  ${seconds.toFixed(0)}s`;
 }
@@ -431,6 +702,16 @@ els.backend.addEventListener('change', () => {
 els.banner.src = bannerUrl;
 els.text.value = DEFAULT_TEXT;
 refreshSizeNote();
+
+// Voices installed on an earlier visit. Restored before the model loads, so
+// they are in the picker and playable from the first moment the page is up.
+loadVoices().then((stored) => {
+  if (!stored.length) return;
+  for (const voice of stored) localVoices.set(localValue(voice.name), voice);
+  renderVoiceOptions();
+  renderVoiceList();
+  els.voice.disabled = false;
+});
 loadSampleTexts().then((loaded) => {
   samples = loaded;
   renderTemplates();

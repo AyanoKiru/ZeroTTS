@@ -73,6 +73,8 @@ produces.
 | `src/player.ts` | AudioWorklet ring buffer, WAV export |
 | `src/rng.ts` | seedable PRNG — the sampler's draws are graph *inputs* |
 | `src/samples.ts` | the sample texts, shared with the Python UI |
+| `src/voicePack.ts` | read voice packs out of a dropped `.zip` |
+| `src/voiceStore.ts` | keep imported voices in IndexedDB across visits |
 | `src/main.ts` | demo UI wiring (imports no runtime code) |
 | `src/ggmlBackend.ts` | the ggml/GGUF backend (see [../cpp/](../cpp/)) |
 | `src/benchGgml.ts` | the ONNX-vs-ggml A/B page |
@@ -83,6 +85,32 @@ the whole take. `main.ts` therefore imports nothing that pulls in
 `onnxruntime-web` — it sends text to the worker and gets audio chunks back. See
 [../docs/BROWSER.md](../docs/BROWSER.md) for the two subtleties (cancellation
 needs a macrotask; chunks are transferred, not copied).
+
+## Your own voices
+
+The voice card's second tab, **Nhập giọng của bạn**, takes the `.zip` a
+[platform.zeroweight.ai](https://platform.zeroweight.ai/audio) voice downloads
+as. Drop it on the page — no unzipping — and the voice joins the picker under
+its own group.
+
+Nothing is uploaded. `src/voicePack.ts` reads the archive in the page: the pack
+folders inside it, then `voice.bin` when it is there (the raw float32 array) or
+`voice.npz` when it is not, which means unzipping a second time and parsing
+`voice_emb.npy`. Both zip layers can be stored or deflated, the latter via
+`DecompressionStream`. `__MACOSX/` and other file-manager droppings are skipped.
+The latents then go to the worker in the `generate` message, as `voiceEmb`
+instead of a `voiceName` it would fetch.
+
+`src/voiceStore.ts` keeps the imported voices in IndexedDB — the browser's
+answer to the Python side copying a pack into `~/.zerotts/voices` — so they are
+in the picker on the next visit, and each one has an × to remove it. Storage
+being unavailable (a private window, a full quota) costs persistence and nothing
+else.
+
+A pack whose latents are the wrong length for the loaded weights is dropped with
+a message rather than offered — wrong latents are the right dtype and rank, so
+they would generate cleanly in a voice that is nobody's. See
+[../docs/VOICES.md](../docs/VOICES.md).
 
 ## Parity checks
 

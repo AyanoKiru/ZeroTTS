@@ -205,7 +205,19 @@ teacher-forced frames. It ships as a `.npz` inside the weights repo.
 > upload a reference clip, and download the resulting latents.
 
 The boundary is narrower than it sounds: latents obtained that way are just a
-`.npz`, so they drop into `voices/<name>/voice.npz` and work with no code change.
+`.npz`. The platform's voice library hands you one zip per voice, and every
+surface here takes that file as it came down — no unzipping, no copying:
+
+```python
+tts.add_voices("~/Downloads/my-voice.zip")   # once, ever
+tts.synthesize("Xin chào.", voice="my-voice")
+```
+
+Both demos have it as the voice picker's second tab, **Nhập giọng của bạn** —
+drop the zip on it and the voice is installed, selected, and there again next
+time. The Gradio server can start with one: `python webui/app.py --voice
+~/Downloads/my-voice.zip`. Details and the pack format:
+[docs/VOICES.md](https://github.com/zeroweight-ai/ZeroTTS/blob/main/docs/VOICES.md).
 
 Eight presets ship with the weights, each tagged by gender, age and register so
 you can pick one by ear or by filter — `maichi` (Mai Chi) is the default used

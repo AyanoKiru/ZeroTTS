@@ -57,8 +57,10 @@ async function generate(id: number, params: GenerateParams): Promise<void> {
   if (!tts) throw new Error('model is not loaded');
   const { segments, voiceName, options, seed } = params;
 
-  let voiceEmb: Float32Array | null = null;
-  if (voiceName) {
+  // Latents from the page win: a voice loaded off disk has no name to fetch by,
+  // and its directory name may well collide with a shipped pack's.
+  let voiceEmb: Float32Array | null = params.voiceEmb ?? null;
+  if (!voiceEmb && voiceName) {
     let cached = voices.get(voiceName);
     if (!cached) {
       cached = await loadVoice(base, voiceName);
@@ -126,6 +128,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         const info: LoadedInfo = {
           voices: loaded.voices, base: loaded.base,
           sampleRate: loaded.tts.sampleRate, backend: loaded.backend,
+          nVoiceQueries: loaded.tts.nVoiceQueries, dModel: loaded.tts.dModel,
         };
         post({ type: 'result', id, value: info });
         break;

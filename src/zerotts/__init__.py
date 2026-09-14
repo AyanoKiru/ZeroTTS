@@ -10,7 +10,14 @@
 from .hub import DEFAULT_REPO_ID, resolve_model_dir
 from .synthesizer import ZeroTTS
 from .text_norm import normalize_vi_text
-from .voices import Voice, list_voices, load_voice
+from .voices import (
+    USER_VOICES_DIR,
+    Voice,
+    install_voice_zip,
+    installed_voices,
+    list_voices,
+    load_voice,
+)
 
 __version__ = "0.1.2"
 
@@ -18,8 +25,11 @@ __all__ = [
     "ZeroTTS",
     "normalize_vi_text",
     "Voice",
+    "install_voice_zip",
+    "installed_voices",
     "list_voices",
     "load_voice",
+    "USER_VOICES_DIR",
     "resolve_model_dir",
     "DEFAULT_REPO_ID",
     "__version__",

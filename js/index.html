@@ -82,6 +82,10 @@
       background: var(--sunk); color: var(--fg); font: inherit; cursor: pointer;
       transition: filter .12s ease, border-color .12s ease;
     }
+    .hint code, .note code {
+      background: var(--sunk); border-radius: 6px; padding: .05rem .3rem;
+      font-size: .92em;
+    }
     button:hover:not(:disabled) { border-color: var(--brand); }
     button.primary {
       background: linear-gradient(135deg, var(--brand-2), var(--brand));
@@ -125,6 +129,48 @@
       animation: pulse 1s ease-in-out infinite;
     }
     @keyframes pulse { 50% { opacity: .25; } }
+
+    /* tabs inside a card */
+    .tabs { display: flex; gap: .25rem; margin: 0 0 .7rem; border-bottom: 1px solid var(--line); }
+    .tab {
+      border: none; border-bottom: 2px solid transparent; border-radius: 0;
+      background: none; padding: .45rem .2rem; margin-right: .9rem;
+      font-size: .9rem; font-weight: 600; color: var(--muted);
+    }
+    .tab:hover:not(.on) { color: var(--fg); }
+    .tab.on { color: var(--fg); border-bottom-color: var(--brand); }
+
+    /* the zip drop target */
+    .drop {
+      display: flex; align-items: center; gap: .6rem; cursor: pointer;
+      padding: 1.1rem; border: 1.5px dashed var(--line); border-radius: 16px;
+      background: var(--sunk); color: var(--muted); font-size: .87rem;
+      text-align: left; transition: border-color .12s ease, background .12s ease;
+    }
+    .drop:hover, .drop.over {
+      border-color: var(--brand);
+      background: color-mix(in srgb, var(--brand) 8%, var(--sunk));
+      color: var(--fg);
+    }
+    .drop .i { width: 1.5em; height: 1.5em; margin: 0; color: var(--brand); }
+    .drop strong { color: var(--fg); font-weight: 700; }
+
+    /* the imported voices, each removable */
+    .voice-list { display: flex; flex-direction: column; gap: .3rem; margin-top: .55rem; }
+    .voice-row {
+      display: flex; align-items: center; gap: .4rem;
+      border: 1px solid var(--line); border-radius: 12px; background: var(--sunk);
+    }
+    .voice-row-name {
+      flex: 1; min-width: 0; border: none; background: none; border-radius: 0;
+      padding: .4rem .7rem; font-size: .86rem; text-align: left;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .voice-row-x {
+      border: none; background: none; border-radius: 0;
+      padding: .2rem .6rem; font-size: 1.15rem; line-height: 1; color: var(--muted);
+    }
+    .voice-row-x:hover { color: var(--brand); }
 
     /* the two list panels — same shape as the Gradio UI's history/templates */
     .list { display: flex; flex-direction: column; gap: .5rem; }
@@ -247,21 +293,56 @@
         </div>
         <p class="foot">
           <strong>Nhân bản giọng nói (voice cloning)</strong> không có trong bản mã
-          nguồn mở — bộ mã hoá giọng chưa được phát hành. Xem
-          <a href="https://github.com/zeroweight-ai/ZeroTTS">kho mã nguồn</a>, hoặc
-          <a href="https://zeroweight.ai">zeroweight.ai</a> nếu bạn cần latents cho
-          giọng của riêng mình.
+          nguồn mở — bộ mã hoá giọng chưa được phát hành. Nhân bản giọng ở
+          <a href="https://zeroweight.ai">zeroweight.ai</a>, tải thư mục giọng về,
+          rồi kéo thả vào tab <strong>Nhập giọng của bạn</strong> bên phải. Xem thêm
+          <a href="https://github.com/zeroweight-ai/ZeroTTS">kho mã nguồn</a>.
         </p>
       </section>
     </div>
 
     <div class="col-side">
       <section class="card">
-        <h2>Chọn giọng đọc</h2>
-        <p class="hint">Nghe thử trước khi tạo.</p>
-        <select id="voice" disabled><option value="">(hãy tải mô hình trước)</option></select>
-        <p class="note" id="voice-meta" style="margin: .45rem 0 .4rem;"></p>
-        <audio id="preview" controls preload="none" style="display: none;"></audio>
+        <h2>Giọng đọc</h2>
+        <!-- Two tabs rather than two cards: choosing a voice and importing one
+             are the same job at different moments, and the imported voice
+             appears in the picker behind the tab it was imported from. -->
+        <div class="tabs" role="tablist">
+          <button id="tab-pick" class="tab on" role="tab"
+                  aria-selected="true" aria-controls="panel-pick">Chọn giọng</button>
+          <button id="tab-import" class="tab" role="tab"
+                  aria-selected="false" aria-controls="panel-import">Nhập giọng của bạn</button>
+        </div>
+
+        <div id="panel-pick" role="tabpanel" aria-labelledby="tab-pick">
+          <p class="hint">Nghe thử trước khi tạo.</p>
+          <select id="voice" disabled><option value="">(hãy tải mô hình trước)</option></select>
+          <p class="note" id="voice-meta" style="margin: .45rem 0 .4rem;"></p>
+          <audio id="preview" controls preload="none" style="display: none;"></audio>
+        </div>
+
+        <div id="panel-import" role="tabpanel" aria-labelledby="tab-import" hidden>
+          <p class="hint">
+            <strong>1.</strong> Nhân bản giọng ở <a href="https://zeroweight.ai"
+            target="_blank" rel="noreferrer">zeroweight.ai</a>, mở
+            <strong>thư viện giọng</strong>, bấm nút tải về ở dòng giọng đó.<br />
+            <strong>2.</strong> Kéo thả file <code>.zip</code> vừa tải vào ô dưới
+            đây. Không cần giải nén — mọi thứ còn lại tự động.
+          </p>
+          <label id="voice-drop" class="drop" for="voice-zip">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 16V4m0 0 4.5 4.5M12 4 7.5 8.5M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16" />
+            </svg>
+            <span><strong>Kéo thả file .zip vào đây</strong><br />hoặc bấm để chọn file</span>
+          </label>
+          <input id="voice-zip" type="file" accept=".zip,application/zip" multiple hidden />
+          <p class="note" id="voice-load-status" style="margin: .55rem 0 0;"></p>
+          <div id="voice-list" class="voice-list"></div>
+          <p class="note" style="margin: .5rem 0 0;">
+            File được đọc ngay trong trình duyệt — không có gì được tải lên máy chủ.
+            Giọng đã nhập được lưu lại cho những lần sau.
+          </p>
+        </div>
       </section>
 
       <section class="card">

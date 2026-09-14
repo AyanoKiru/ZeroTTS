@@ -37,6 +37,7 @@ sampled frame.
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -116,6 +117,17 @@ class ZeroTTS:
         )
 
         self.voices_root = model_dir / "voices"
+        # Voice packs from outside the model directory, name -> directory. Kept
+        # separate from `voices_root` rather than copied into it: the model
+        # directory is a cache of a read-only repo, and writing a user's voice
+        # into it would be wiped by the next re-download.
+        #
+        # Seeded from the install directory, so a voice added once is simply
+        # there on every later run — the zip is dropped in once, not on every
+        # start. Unvalidated at this point: these may predate a model change,
+        # and refusing to construct because of an old voice would be absurd;
+        # `load_voice` is where the shape is checked.
+        self._extra_voices: dict[str, Path] = _voices.installed_voices()
         if warmup:
             self.warmup()
 
@@ -160,11 +172,63 @@ class ZeroTTS:
 
     # ── voices ───────────────────────────────────────────────────────────────
 
+    def add_voices(self, path: str | Path) -> list:
+        """Make the voice(s) at ``path`` available. Returns the names added.
+
+        ``path`` is whichever of these the user has:
+
+        * **the downloaded zip** — the usual case. It is unpacked into
+          :data:`zerotts.voices.USER_VOICES_DIR` and stays there, so this is a
+          one-time step: later runs find the voice without being told.
+        * a pack directory (one holding a ``voice.npz``), or a directory of
+          them. Used where they already are, not copied.
+
+        Added voices SHADOW bundled ones of the same name: someone who adds a
+        voice called ``maichi`` means theirs, and silently generating in the
+        shipped one instead would be the worse surprise.
+        """
+        path = Path(path).expanduser()
+        if path.is_file():
+            packs = _voices.install_voice_zip(path)
+        else:
+            packs = _voices.discover_packs(path)
+            if not packs:
+                raise FileNotFoundError(
+                    f"no voice pack in {path} — expected the downloaded .zip, a "
+                    "directory with a voice.npz in it, or a directory of those")
+
+        # Validated eagerly. A pack built for different weights is a real and
+        # quiet failure mode (right dtype, right rank, wrong model), and finding
+        # out here beats finding out mid-generation.
+        try:
+            for name, vdir in packs.items():
+                _voices.load_voice_dir(vdir, name, expect_queries=self.n_voice_queries)
+        except Exception:
+            # An installed-but-unusable voice would come back on every later run
+            # and have to be rejected again. Undo the install rather than leave
+            # that behind; a pack used where it lies is left alone.
+            if path.is_file():
+                for vdir in packs.values():
+                    shutil.rmtree(vdir, ignore_errors=True)
+            raise
+
+        self._extra_voices.update(packs)
+        return list(packs)
+
+    def add_voices_dir(self, path: str | Path) -> list:
+        """Deprecated alias for :meth:`add_voices`, which now also takes the
+        downloaded zip directly."""
+        return self.add_voices(path)
+
     def list_voices(self) -> list:
-        """Names of the voice packs bundled with these weights."""
-        return _voices.list_voices(self.voices_root)
+        """Names of every voice this instance can use: the packs bundled with
+        these weights, plus anything installed or added with :meth:`add_voices`."""
+        return sorted(set(_voices.list_voices(self.voices_root)) | set(self._extra_voices))
 
     def load_voice(self, name: str) -> _voices.Voice:
+        vdir = self._extra_voices.get(name)
+        if vdir is not None:
+            return _voices.load_voice_dir(vdir, name, expect_queries=self.n_voice_queries)
         return _voices.load_voice(self.voices_root, name, expect_queries=self.n_voice_queries)
 
     def resolve_voice(self, voice: str | _voices.Voice | np.ndarray | None) -> np.ndarray:

@@ -3,6 +3,7 @@
     pip install "zerotts[webui]"
     python webui/app.py
     python webui/app.py --model ./local_model_dir
+    python webui/app.py --voice ~/Downloads/my-voice.zip
 
 The page is deliberately split in two. The BASIC view is text → voice → player
 and nothing else, so someone who just wants to hear a sentence never meets a
@@ -10,8 +11,11 @@ sampler knob. Everything technical — sampling parameters, the run log, the
 segments actually sent to the model — lives under "Tuỳ chọn nâng cao".
 
 Voice selection is a picker over the precomputed voice packs shipped with the
-weights. There is no "upload a reference clip" control, because there is nothing
-behind it — the voice encoder is not part of this release. See docs/VOICES.md.
+weights, plus any the user has installed. There is no "upload a reference clip"
+control, because there is nothing behind it — the voice encoder is not part of
+this release. What the picker's second tab takes is the finished article: the
+.zip a zeroweight.ai voice downloads as, which it unpacks into the install
+directory so it is simply there next time. See docs/VOICES.md.
 """
 
 from __future__ import annotations
@@ -24,16 +28,40 @@ import sys
 
 import gradio as gr
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+
+sys.path.insert(0, _HERE)
+
+# Run from a checkout, use the checkout's zerotts.
+#
+# This file only ever ships inside the repository, so `python webui/app.py` is
+# always someone standing in a clone — and if they also have the published
+# package installed, site-packages would win and they would be running a
+# different version of the library than the one they can see. That failed
+# loudly the first time the UI used a method the release did not have yet, and
+# silently every time before that.
+_SRC = os.path.join(_ROOT, "src")
+if os.path.isfile(os.path.join(_SRC, "zerotts", "__init__.py")):
+    sys.path.insert(0, _SRC)
 
 import audio_stream  # noqa: E402
 import engine  # noqa: E402
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
 BANNER_PATH = os.path.join(_ROOT, "docs", "assets", "banner.png")
 
 DEFAULT_TEXT = "Xin chào tất cả mọi người. Giọng nói này được tạo ra bởi ZeroTTS."
+
+# The panel is the only place this is explained, so it carries the whole
+# recipe: where a pack comes from, what the folder has to look like, and the
+# two shapes of path that work. Someone pasting a path here has a folder open
+# next to the browser and no reason to have read docs/VOICES.md.
+USER_VOICE_HELP = (
+    "**1.** Nhân bản giọng ở [zeroweight.ai](https://zeroweight.ai), mở "
+    "**thư viện giọng**, bấm nút tải về ở dòng giọng đó.\n\n"
+    "**2.** Kéo thả file `.zip` vừa tải vào ô dưới đây. "
+    "Không cần giải nén — mọi thứ còn lại tự động.\n\n"
+    "Giọng được lưu vào máy, nên lần sau mở lại là đã có sẵn trong danh sách."
+)
 
 MODE_VOICE = "voice"
 MODE_UNCOND = "uncond"
@@ -248,6 +276,27 @@ def refresh_voices():
     return gr.update(choices=choices, value=default)
 
 
+def load_user_voices(path, current):
+    """The "your voices" panel: install a dropped zip, then move the picker onto
+    the first voice it brought in.
+
+    Selecting it rather than only refreshing the list is the point of the
+    panel — someone who has just dropped a file in wants to hear that voice, not
+    to go and find it in a dropdown that grew by one.
+
+    The upload component is cleared either way (the last output): leaving the
+    file sitting in the box after a successful install reads as "not done yet",
+    and after a failed one it invites pressing the same thing again.
+    """
+    names, message = engine.add_voices(path)
+    if not names:
+        return gr.update(), gr.update(), gr.update(), message, None
+    choices = engine.voice_choices(None)
+    chosen = names[0] if names[0] in [v for _, v in choices] else current
+    preview, meta = on_voice_change(chosen)
+    return gr.update(choices=choices, value=chosen), preview, meta, message, None
+
+
 def on_voice_change(name):
     """Preview + description for the selected voice.
 
@@ -451,24 +500,45 @@ with gr.Blocks(title="ZeroTTS", **_STYLE_ON_BLOCKS) as demo:
                 )
                 gr.Markdown(
                     "**Nhân bản giọng nói (voice cloning)** không có trong bản mã "
-                    "nguồn mở — bộ mã hoá giọng chưa được phát hành. Cần latents "
-                    "cho giọng của riêng bạn? Xem "
-                    "[zeroweight.ai](https://zeroweight.ai).",
+                    "nguồn mở — bộ mã hoá giọng chưa được phát hành. Nhân bản "
+                    "giọng ở [zeroweight.ai](https://zeroweight.ai), tải file "
+                    "`.zip` về, rồi kéo thả vào tab **Nhập giọng của bạn** "
+                    "bên phải.",
                     elem_classes="zt-foot",
                 )
 
         # ── voice picker, then the takes it produced ─────────────────────────
         with gr.Column(scale=2):
             with gr.Column(elem_classes="zt-card"):
-                gr.Markdown("Chọn giọng đọc", elem_classes="zt-card-title")
-                with gr.Row():
-                    voice_dropdown = gr.Dropdown(choices=[], label=None,
-                                                 show_label=False, value=None,
-                                                 container=False, scale=5)
-                    refresh_voices_btn = gr.Button("↻", scale=0, min_width=48)
-                voice_meta = gr.Markdown("", elem_classes="zt-hint")
-                voice_preview = gr.Audio(label="Nghe thử giọng", interactive=False,
-                                         elem_classes="zt-player")
+                gr.Markdown("Giọng đọc", elem_classes="zt-card-title")
+                # Two tabs rather than two cards: choosing a voice and importing
+                # one are the same job at different moments, and an imported
+                # voice lands in the picker on the tab beside it.
+                with gr.Tabs():
+                    with gr.Tab("Chọn giọng"):
+                        with gr.Row():
+                            voice_dropdown = gr.Dropdown(
+                                choices=[], label=None, show_label=False,
+                                value=None, container=False, scale=5)
+                            refresh_voices_btn = gr.Button("↻", scale=0, min_width=48)
+                        voice_meta = gr.Markdown("", elem_classes="zt-hint")
+                        voice_preview = gr.Audio(label="Nghe thử giọng",
+                                                 interactive=False,
+                                                 elem_classes="zt-player")
+
+                    with gr.Tab("Nhập giọng của bạn"):
+                        gr.Markdown(USER_VOICE_HELP, elem_classes="zt-hint")
+                        # A file drop, not a path box: the user has the zip in a
+                        # downloads folder and a browser in front of them, and
+                        # asking them to find its absolute path is asking them
+                        # to open a terminal. `type="filepath"` because the
+                        # installer reads the archive off disk — Gradio has
+                        # already saved it there by the time this runs.
+                        user_voice_zip = gr.File(
+                            label="Kéo thả file .zip giọng vào đây",
+                            file_types=[".zip"], type="filepath", height=110,
+                        )
+                        user_voice_status = gr.Markdown("", elem_classes="zt-hint")
 
             with gr.Column(elem_classes="zt-card"):
                 with gr.Row():
@@ -560,6 +630,12 @@ with gr.Blocks(title="ZeroTTS", **_STYLE_ON_BLOCKS) as demo:
     )
     stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[gen_event])
 
+    user_voice_zip.upload(
+        fn=load_user_voices, inputs=[user_voice_zip, voice_dropdown],
+        outputs=[voice_dropdown, voice_preview, voice_meta, user_voice_status,
+                 user_voice_zip],
+    )
+
     refresh_history_btn.click(fn=refresh_history,
                               outputs=[history_dataset, history_state])
     history_dataset.select(fn=play_selected, inputs=[history_state],
@@ -596,12 +672,26 @@ with gr.Blocks(title="ZeroTTS", **_STYLE_ON_BLOCKS) as demo:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=engine.DEFAULT_MODEL)
+    ap.add_argument(
+        "--voice", action="append", default=[], metavar="PATH",
+        dest="voices", help="A downloaded voice .zip, or a voice pack directory. "
+             "Repeatable. The same thing the picker's import tab does, for a "
+             "server that should start with them installed.")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--share", action="store_true")
     args = ap.parse_args()
 
     engine.set_model(args.model)
+
+    # Loading the packs also loads the model, which the first request would do
+    # anyway — and doing it here means a bad --voice is reported at startup
+    # rather than by an empty dropdown later.
+    for path in args.voices:
+        names, message = engine.add_voices(path)
+        print(message)
+        if not names:
+            raise SystemExit(2)
 
     # Mounted onto our own FastAPI app rather than demo.launch(), so the live
     # audio route is registered before the server starts. Gradio goes at "/" —

@@ -2,7 +2,9 @@
 generation. Kept UI-framework-agnostic so app.py just calls into here.
 
 Speaker conditioning is a precomputed voice pack's latents, or the model's
-learned unconditional prefix. There is no cloning — see zerotts.voices.
+learned unconditional prefix. There is no cloning in this package — but a pack
+fitted elsewhere (zeroweight.ai hands one out as a zip) is a drop-in, and
+``add_voices`` is what the UI calls to take one.
 """
 
 from __future__ import annotations
@@ -104,6 +106,45 @@ def _load_voices() -> list:
         except Exception:
             continue
     return out
+
+
+def add_voices(path: str) -> tuple:
+    """Install the voice(s) at ``path`` — the downloaded zip, or a folder.
+
+    Returns ``(names, message)`` — never raises, because every plausible thing
+    the user drops on that box is wrong in a way they can fix, and a Gradio
+    exception is a red box with a stack trace in it instead of a sentence.
+    """
+    path = (path or "").strip().strip("'\"")
+    if not path:
+        return [], "Hãy chọn file .zip giọng đã tải về."
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        return [], f"Không tìm thấy: {path}"
+
+    tts = get_tts()
+    # An older `zerotts` on sys.path — a published release installed alongside
+    # this checkout — has no `add_voices`, and the AttributeError that follows
+    # says nothing about what to do. app.py prefers the checkout's src/ so this
+    # should not happen, but the version actually loaded is the one fact worth
+    # reporting when it does.
+    if not hasattr(tts, "add_voices"):
+        import zerotts
+        return [], (
+            "Bản `zerotts` đang dùng quá cũ, chưa có `add_voices` "
+            f"(đang nạp từ `{os.path.dirname(zerotts.__file__)}`, "
+            f"phiên bản {getattr(zerotts, '__version__', '?')}). "
+            "Hãy chạy `pip install -e .` trong thư mục ZeroTTS rồi thử lại."
+        )
+
+    try:
+        names = tts.add_voices(path)
+    except Exception as exc:
+        return [], f"Không nạp được giọng: {exc}"
+    return names, (
+        f"✅ Đã nạp {len(names)} giọng: " + ", ".join(names)
+        + ". Giọng đã được lưu lại — lần sau mở web là có sẵn."
+    )
 
 
 def voice_choices(selected_tags=None) -> list:

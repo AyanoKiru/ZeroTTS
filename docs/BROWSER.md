@@ -104,7 +104,9 @@ specifically bite in JavaScript.
   a type error.
 * **`voice.bin`, not `voice.npz`.** `.npz` is a zip of `.npy`; the browser gets a
   raw little-endian float32 blob instead — `fetch` → `arrayBuffer` →
-  `new Float32Array`.
+  `new Float32Array`. The one place the demo does parse an `.npz` is a voice zip
+  the *user* dropped on the page, whose packs need not carry a `voice.bin`
+  (`js/src/voicePack.ts`).
 * **`seen_mask` is `(1, K, 1024)` bool**, mutated in place every frame. Use a
   `Uint8Array` and wrap it as `new ort.Tensor('bool', buf, dims)`; do not
   reallocate it per frame.

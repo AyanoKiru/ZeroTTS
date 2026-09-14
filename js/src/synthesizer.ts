@@ -123,7 +123,9 @@ export class ZeroTTSBrowser {
   readonly sampleRate: number;
   readonly numCodebooks: number;
   readonly nVoiceQueries: number;
-  private readonly dModel: number;
+  /** Public alongside nVoiceQueries: together they are the shape of a valid
+   *  voice pack, which the page checks before offering a loaded one. */
+  readonly dModel: number;
   private readonly nLayers: number;
   private readonly nHeads: number;
   private readonly dHead: number;
