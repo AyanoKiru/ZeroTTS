@@ -86,6 +86,19 @@ the whole take. `main.ts` therefore imports nothing that pulls in
 [../docs/BROWSER.md](../docs/BROWSER.md) for the two subtleties (cancellation
 needs a macrotask; chunks are transferred, not copied).
 
+## Live playback
+
+**Phát ngay trong lúc đang tạo** is on by default: chunks go to an AudioWorklet
+ring buffer as they are decoded, so the take is audible while it is still being
+made. Turn it off on a machine that generates slower than realtime — the buffer
+runs dry between chunks and the worklet plays silence into the gaps, which
+sounds like a broken model rather than a slow one. Off, the chunks are still
+collected and the WAV still assembled; they are simply not pushed at the
+speakers. The choice is remembered in `localStorage`.
+
+(`webui/app.py` has the same checkbox, and skips opening its stream entirely
+when it is off.)
+
 ## Your own voices
 
 The voice card's second tab, **Nhập giọng của bạn**, takes the `.zip` a

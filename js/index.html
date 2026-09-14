@@ -130,6 +130,18 @@
     }
     @keyframes pulse { 50% { opacity: .25; } }
 
+    /* a checkbox with a note under its label */
+    .check {
+      display: flex; gap: .55rem; align-items: flex-start; cursor: pointer;
+      margin: 0 0 .8rem; font-size: .88rem; color: var(--fg);
+    }
+    .check input { width: auto; margin: .18rem 0 0; flex: none; accent-color: var(--brand); }
+    .check strong { font-weight: 600; }
+    .check em {
+      display: block; margin-top: .15rem; font-style: normal;
+      font-size: .82rem; color: var(--muted); line-height: 1.45;
+    }
+
     /* tabs inside a card */
     .tabs { display: flex; gap: .25rem; margin: 0 0 .7rem; border-bottom: 1px solid var(--line); }
     .tab {
@@ -281,6 +293,15 @@
 
       <section class="card">
         <h2>Nghe kết quả</h2>
+        <label class="check">
+          <input id="speak-live" type="checkbox" checked />
+          <span>
+            <strong>Phát ngay trong lúc đang tạo</strong>
+            <em>Nếu máy chậm (tạo chậm hơn thời gian thực), hãy <strong>tắt</strong>
+            tuỳ chọn này — phát trực tiếp sẽ bị ngắt quãng giữa chừng. Bản hoàn
+            chỉnh bên dưới không bị ảnh hưởng.</em>
+          </span>
+        </label>
         <div id="live-pill"><i></i> Đang phát trực tiếp trong lúc tạo…</div>
         <p class="player-label">Bản hoàn chỉnh — tua và tải về được:</p>
         <audio id="result" controls preload="none"></audio>

@@ -63,6 +63,17 @@ USER_VOICE_HELP = (
     "Giọng được lưu vào máy, nên lần sau mở lại là đã có sẵn trong danh sách."
 )
 
+# Why anyone would turn live playback off. The honest reason is that the
+# transport cannot help: a machine that generates slower than realtime drains
+# the browser's buffer faster than we fill it, and the player stalls and resumes
+# mid-sentence. The finished file is unaffected, and that is the point worth
+# making — turning this off costs nothing but the preview.
+LIVE_PLAYBACK_NOTE = (
+    "Nếu máy chậm (tạo chậm hơn thời gian thực), hãy **tắt** tuỳ chọn này — "
+    "phát trực tiếp sẽ bị ngắt quãng giữa chừng. Bản hoàn chỉnh bên dưới "
+    "không bị ảnh hưởng."
+)
+
 MODE_VOICE = "voice"
 MODE_UNCOND = "uncond"
 MODE_CHOICES = [
@@ -370,7 +381,8 @@ def clear_players():
 
 
 def generate_ui(text, voice_name, mode, max_chunk_sec, cfg_scale, temperature,
-                topk, topp, repetition_penalty, eoa_extra_frames, file_list):
+                topk, topp, repetition_penalty, eoa_extra_frames, speak_live,
+                file_list):
     """Streams audio out through webui/audio_stream.py — a single continuous WAV
     response — NOT through gr.Audio(streaming=True).
 
@@ -380,6 +392,11 @@ def generate_ui(text, voice_name, mode, max_chunk_sec, cfg_scale, temperature,
     chunk boundary clicks; and our first chunks are 1-4 codec frames (0.08-0.32 s),
     shorter than AAC's own priming, which is why the first chunk appears to repeat.
     The saved .wav is always fine — it is the transport that is broken.
+
+    ``speak_live`` off skips the stream entirely rather than opening one nobody
+    listens to: on a machine slower than realtime the player stalls mid-sentence,
+    and the generation itself is unchanged either way — the same chunks are
+    produced, the same file is saved, they simply are not pushed anywhere.
 
     Outputs: (live player HTML, completed-file player, status, history dataset,
     history state, segments box).
@@ -400,11 +417,12 @@ def generate_ui(text, voice_name, mode, max_chunk_sec, cfg_scale, temperature,
     yield gr.update(), gr.update(), "Đang tạo…", gr.update(), file_list, segments_text
 
     sample_rate = engine.get_sample_rate()
-    sid = audio_stream.open_stream(sample_rate)
-    # Show the player before the first chunk exists: the route blocks until audio
-    # arrives, so the browser connects and starts buffering right away.
-    yield (audio_stream.player_html(sid), gr.update(), "Đang tạo…",
-           gr.update(), file_list, gr.update())
+    sid = audio_stream.open_stream(sample_rate) if speak_live else None
+    if sid:
+        # Show the player before the first chunk exists: the route blocks until
+        # audio arrives, so the browser connects and starts buffering right away.
+        yield (audio_stream.player_html(sid), gr.update(), "Đang tạo…",
+               gr.update(), file_list, gr.update())
 
     result: dict = {}
     n_samples = 0
@@ -418,7 +436,8 @@ def generate_ui(text, voice_name, mode, max_chunk_sec, cfg_scale, temperature,
                 eoa_extra_frames=int(eoa_extra_frames), use_voice=use_voice,
                 result=result,
             ):
-                audio_stream.push(sid, chunk)
+                if sid:
+                    audio_stream.push(sid, chunk)
                 n_samples += chunk.shape[0]
                 yield (gr.update(), gr.update(),
                        f"Đang tạo… {n_samples / sample_rate:.1f}s",
@@ -429,7 +448,8 @@ def generate_ui(text, voice_name, mode, max_chunk_sec, cfg_scale, temperature,
     finally:
         # Ends the HTTP response cleanly, including when the run is cancelled by
         # the Stop button (the generator is closed, which lands us here).
-        audio_stream.close(sid)
+        if sid:
+            audio_stream.close(sid)
 
     files = engine.list_generated()
     saved = result.get("path")
@@ -488,12 +508,19 @@ with gr.Blocks(title="ZeroTTS", **_STYLE_ON_BLOCKS) as demo:
 
             with gr.Column(elem_classes="zt-card"):
                 gr.Markdown("Nghe kết quả", elem_classes="zt-card-title")
-                gr.Markdown("Phát ngay trong lúc đang tạo:", elem_classes="zt-hint")
-                # A plain <audio> fed by our own continuous-WAV route rather than
-                # gr.Audio(streaming=True) — see generate_ui's docstring and
-                # webui/audio_stream.py.
-                live_player = gr.HTML(value=audio_stream.player_html(None),
-                                      elem_classes="zt-live")
+                speak_live_checkbox = gr.Checkbox(
+                    value=True, label="Phát ngay trong lúc đang tạo",
+                    info=LIVE_PLAYBACK_NOTE, container=False,
+                )
+                # Hidden wholesale when the option is off, label and all — an
+                # empty player sitting there through every run reads as broken
+                # rather than switched off.
+                with gr.Column(visible=True) as live_box:
+                    # A plain <audio> fed by our own continuous-WAV route rather
+                    # than gr.Audio(streaming=True) — see generate_ui's docstring
+                    # and webui/audio_stream.py.
+                    live_player = gr.HTML(value=audio_stream.player_html(None),
+                                          elem_classes="zt-live")
                 completed_audio = gr.Audio(
                     label="Bản hoàn chỉnh — tua và tải về được",
                     interactive=False, autoplay=False, elem_classes="zt-player",
@@ -624,11 +651,17 @@ with gr.Blocks(title="ZeroTTS", **_STYLE_ON_BLOCKS) as demo:
         fn=generate_ui,
         inputs=[text_box, voice_dropdown, mode_radio, chunk_sec_slider, cfg_slider,
                 temperature_slider, topk_slider, topp_slider,
-                repetition_penalty_slider, eoa_extra_slider, history_state],
+                repetition_penalty_slider, eoa_extra_slider, speak_live_checkbox,
+                history_state],
         outputs=[live_player, completed_audio, gen_status, history_dataset,
                  history_state, segments_box],
     )
     stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[gen_event])
+
+    speak_live_checkbox.change(
+        fn=lambda on: gr.update(visible=bool(on)),
+        inputs=[speak_live_checkbox], outputs=[live_box],
+    )
 
     user_voice_zip.upload(
         fn=load_user_voices, inputs=[user_voice_zip, voice_dropdown],

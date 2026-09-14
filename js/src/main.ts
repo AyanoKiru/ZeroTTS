@@ -66,6 +66,7 @@ const els = {
   segments: $<HTMLPreElement>('segments'),
   result: $<HTMLAudioElement>('result'),
   livePill: $<HTMLDivElement>('live-pill'),
+  speakLive: $<HTMLInputElement>('speak-live'),
   history: $<HTMLDivElement>('history'),
   templates: $<HTMLDivElement>('templates'),
 };
@@ -218,6 +219,10 @@ els.generate.addEventListener('click', async () => {
   els.download.style.display = 'none';
   stopped = false;
 
+  // Read once, here: toggling mid-run would start or stop the player halfway
+  // through a take, which is worse than either setting.
+  const speakLive = els.speakLive.checked;
+
   const seedValue = Number(els.seed.value);
   const seed = Number.isFinite(seedValue) && seedValue >= 0 ? seedValue : undefined;
 
@@ -238,9 +243,13 @@ els.generate.addEventListener('click', async () => {
   els.segments.textContent = segments.map((s, i) => `[${i + 1}] ${s}`).join('\n');
 
   try {
-    await player.start();
+    // Off, the chunks are still collected and the WAV is still assembled — they
+    // are simply not pushed at the speakers. On a machine slower than realtime
+    // the ring buffer would run dry between chunks and play silence into the
+    // gaps, which sounds like a broken model rather than a slow one.
+    if (speakLive) await player.start();
     status('Generating…');
-    live(true);
+    live(speakLive);
 
     // The worker loads the voice and runs the model; this thread stays free to
     // paint, so the buttons and the log update while generation is under way.
@@ -256,12 +265,13 @@ els.generate.addEventListener('click', async () => {
     for await (const chunk of run.chunks) {
       if (firstChunkAt === null) {
         firstChunkAt = performance.now() - started;
-        status(`Playing — first audio in ${firstChunkAt.toFixed(0)} ms`);
+        status(`${speakLive ? 'Playing' : 'Generating'} — first audio in `
+          + `${firstChunkAt.toFixed(0)} ms`);
       }
       chunks.push(chunk);
-      player.push(chunk);
+      if (speakLive) player.push(chunk);
     }
-    player.finish();
+    if (speakLive) player.finish();
     // Stop already reset the player and said so; a partial take is not worth
     // overwriting that with statistics.
     if (stopped) return;
@@ -273,7 +283,7 @@ els.generate.addEventListener('click', async () => {
 
     const elapsed = (performance.now() - started) / 1000;
     const duration = total / sampleRate;
-    const overflow = player.overflowed
+    const overflow = speakLive && player.overflowed
       ? ' — WARNING: playback buffer overflowed, live audio is incomplete (the ' +
         'downloaded WAV is not)'
       : '';
@@ -682,6 +692,27 @@ function renderHistory(): void {
     ...takes.map((t) => listItem(t.title, oneLine(t.text), () => showTake(t.url, true))),
   );
 }
+
+/**
+ * Live playback is remembered across visits.
+ *
+ * The reason to turn it off is the machine, not the take — someone who has
+ * switched it off once because their laptop generates at 0.4x wants it off
+ * every time, and re-ticking it on each reload is the same annoyance repeated.
+ * Wrapped because storage throws in a private window, where the default simply
+ * stands.
+ */
+const SPEAK_LIVE_KEY = 'zerotts:speak-live';
+
+try {
+  if (localStorage.getItem(SPEAK_LIVE_KEY) === 'off') els.speakLive.checked = false;
+} catch { /* no storage: the default is on, which is the right guess */ }
+
+els.speakLive.addEventListener('change', () => {
+  try {
+    localStorage.setItem(SPEAK_LIVE_KEY, els.speakLive.checked ? 'on' : 'off');
+  } catch { /* the setting still holds for this session */ }
+});
 
 els.voice.addEventListener('change', updateVoiceUi);
 els.repo.addEventListener('change', refreshSizeNote);
